@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"regexp"
@@ -18,9 +19,9 @@ import (
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
 	"github.com/go-mysql-org/go-mysql/schema"
+	"github.com/go-mysql-org/go-mysql/utils"
 	"github.com/pingcap/errors"
-	"github.com/pingcap/tidb/parser"
-	"github.com/siddontang/go-log/log"
+	"github.com/pingcap/tidb/pkg/parser"
 )
 
 // Canal can sync your MySQL data into everywhere, like Elasticsearch, Redis, etc...
@@ -57,14 +58,15 @@ type Canal struct {
 }
 
 // canal will retry fetching unknown table's meta after UnknownTableRetryPeriod
-var UnknownTableRetryPeriod = time.Second * time.Duration(10)
-var ErrExcludedTable = errors.New("excluded table meta")
+var (
+	UnknownTableRetryPeriod = time.Second * time.Duration(10)
+	ErrExcludedTable        = errors.New("excluded table meta")
+)
 
 func NewCanal(cfg *Config) (*Canal, error) {
 	c := new(Canal)
 	if cfg.Logger == nil {
-		streamHandler, _ := log.NewStreamHandler(os.Stdout)
-		cfg.Logger = log.NewDefault(streamHandler)
+		cfg.Logger = slog.Default()
 	}
 	if cfg.Dialer == nil {
 		dialer := &net.Dialer{}
@@ -99,13 +101,20 @@ func NewCanal(cfg *Config) (*Canal, error) {
 		return nil, errors.Trace(err)
 	}
 
-	// init table filter
+	if err := c.initTableFilter(); err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	return c, nil
+}
+
+func (c *Canal) initTableFilter() error {
 	if n := len(c.cfg.IncludeTableRegex); n > 0 {
 		c.includeTableRegex = make([]*regexp.Regexp, n)
 		for i, val := range c.cfg.IncludeTableRegex {
 			reg, err := regexp.Compile(val)
 			if err != nil {
-				return nil, errors.Trace(err)
+				return errors.Trace(err)
 			}
 			c.includeTableRegex[i] = reg
 		}
@@ -116,7 +125,7 @@ func NewCanal(cfg *Config) (*Canal, error) {
 		for i, val := range c.cfg.ExcludeTableRegex {
 			reg, err := regexp.Compile(val)
 			if err != nil {
-				return nil, errors.Trace(err)
+				return errors.Trace(err)
 			}
 			c.excludeTableRegex[i] = reg
 		}
@@ -125,8 +134,7 @@ func NewCanal(cfg *Config) (*Canal, error) {
 	if c.includeTableRegex != nil || c.excludeTableRegex != nil {
 		c.tableMatchCache = make(map[string]bool)
 	}
-
-	return c, nil
+	return nil
 }
 
 func (c *Canal) prepareDumper() error {
@@ -143,9 +151,12 @@ func (c *Canal) prepareDumper() error {
 	}
 
 	if c.dumper == nil {
-		//no mysqldump, use binlog only
+		// no mysqldump, use binlog only
 		return nil
 	}
+
+	// use the same logger for the dumper
+	c.dumper.Logger = c.cfg.Logger
 
 	dbs := c.cfg.Dump.Databases
 	tables := c.cfg.Dump.Tables
@@ -222,7 +233,7 @@ func (c *Canal) run() error {
 		c.cancel()
 	}()
 
-	c.master.UpdateTimestamp(uint32(time.Now().Unix()))
+	c.master.UpdateTimestamp(uint32(utils.Now().Unix()))
 
 	if !c.dumped {
 		c.dumped = true
@@ -231,14 +242,14 @@ func (c *Canal) run() error {
 		close(c.dumpDoneCh)
 
 		if err != nil {
-			c.cfg.Logger.Errorf("canal dump mysql err: %v", err)
+			c.cfg.Logger.Error("canal dump mysql err", slog.Any("error", err))
 			return errors.Trace(err)
 		}
 	}
 
 	if err := c.runSyncBinlog(); err != nil {
 		if errors.Cause(err) != context.Canceled {
-			c.cfg.Logger.Errorf("canal start sync binlog err: %v", err)
+			c.cfg.Logger.Error("canal start sync binlog err", slog.Any("error", err))
 			return errors.Trace(err)
 		}
 	}
@@ -247,15 +258,17 @@ func (c *Canal) run() error {
 }
 
 func (c *Canal) Close() {
-	c.cfg.Logger.Infof("closing canal")
+	c.cfg.Logger.Info("closing canal")
 	c.m.Lock()
 	defer c.m.Unlock()
 
 	c.cancel()
 	c.syncer.Close()
 	c.connLock.Lock()
-	c.conn.Close()
-	c.conn = nil
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
 	c.connLock.Unlock()
 
 	_ = c.eventHandler.OnPosSynced(nil, c.master.Position(), c.master.GTIDSet(), true)
@@ -291,7 +304,10 @@ func (c *Canal) checkTableMatch(key string) bool {
 				break
 			}
 		}
+	} else {
+		matchFlag = true
 	}
+
 	// check exclude
 	if matchFlag && c.excludeTableRegex != nil {
 		for _, reg := range c.excludeTableRegex {
@@ -359,10 +375,10 @@ func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
 		// if DiscardNoMetaRowEvent is true, we just log this error
 		if c.cfg.DiscardNoMetaRowEvent {
 			c.tableLock.Lock()
-			c.errorTablesGetTime[key] = time.Now()
+			c.errorTablesGetTime[key] = utils.Now()
 			c.tableLock.Unlock()
 			// log error and return ErrMissingTableMeta
-			c.cfg.Logger.Errorf("canal get table meta err: %v", errors.Trace(err))
+			c.cfg.Logger.Error("canal get table meta err", slog.Any("error", errors.Trace(err)))
 			return nil, schema.ErrMissingTableMeta
 		}
 		return nil, err
@@ -451,23 +467,36 @@ func (c *Canal) prepareSyncer() error {
 		Logger:                  c.cfg.Logger,
 		Dialer:                  c.cfg.Dialer,
 		Localhost:               c.cfg.Localhost,
+		EventCacheCount:         c.cfg.EventCacheCount,
+		RowsEventDecodeFunc: func(event *replication.RowsEvent, data []byte) error {
+			pos, err := event.DecodeHeader(data)
+			if err != nil {
+				return err
+			}
+
+			key := fmt.Sprintf("%s.%s", string(event.Table.Schema), string(event.Table.Table))
+			if !c.checkTableMatch(key) {
+				return nil
+			}
+
+			return event.DecodeData(pos, data)
+		},
 	}
 
 	if strings.Contains(c.cfg.Addr, "/") {
 		cfg.Host = c.cfg.Addr
 	} else {
-		seps := strings.Split(c.cfg.Addr, ":")
-		if len(seps) != 2 {
-			return errors.Errorf("invalid mysql addr format %s, must host:port", c.cfg.Addr)
+		host, port, err := net.SplitHostPort(c.cfg.Addr)
+		if err != nil {
+			return errors.Errorf("invalid MySQL address format %s, must host:port", c.cfg.Addr)
 		}
-
-		port, err := strconv.ParseUint(seps[1], 10, 16)
+		portNumber, err := strconv.ParseUint(port, 10, 16)
 		if err != nil {
 			return errors.Trace(err)
 		}
 
-		cfg.Host = seps[0]
-		cfg.Port = uint16(port)
+		cfg.Host = host
+		cfg.Port = uint16(portNumber)
 	}
 
 	c.syncer = replication.NewBinlogSyncer(cfg)
@@ -475,7 +504,7 @@ func (c *Canal) prepareSyncer() error {
 	return nil
 }
 
-func (c *Canal) connect(options ...func(*client.Conn)) (*client.Conn, error) {
+func (c *Canal) connect(options ...client.Option) (*client.Conn, error) {
 	ctx, cancel := context.WithTimeout(c.ctx, time.Second*10)
 	defer cancel()
 
@@ -487,10 +516,11 @@ func (c *Canal) connect(options ...func(*client.Conn)) (*client.Conn, error) {
 func (c *Canal) Execute(cmd string, args ...interface{}) (rr *mysql.Result, err error) {
 	c.connLock.Lock()
 	defer c.connLock.Unlock()
-	argF := make([]func(*client.Conn), 0)
+	argF := make([]client.Option, 0)
 	if c.cfg.TLSConfig != nil {
-		argF = append(argF, func(conn *client.Conn) {
+		argF = append(argF, func(conn *client.Conn) error {
 			conn.SetTLSConfig(c.cfg.TLSConfig)
+			return nil
 		})
 	}
 
@@ -522,7 +552,7 @@ func (c *Canal) SyncedPosition() mysql.Position {
 }
 
 func (c *Canal) SyncedTimestamp() uint32 {
-	return c.master.timestamp
+	return c.master.Timestamp()
 }
 
 func (c *Canal) SyncedGTIDSet() mysql.GTIDSet {

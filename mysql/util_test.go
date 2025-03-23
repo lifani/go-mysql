@@ -1,15 +1,13 @@
 package mysql
 
 import (
-	"github.com/pingcap/check"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
-type utilTestSuite struct {
-}
-
-var _ = check.Suite(&utilTestSuite{})
-
-func (s *utilTestSuite) TestCompareServerVersions(c *check.C) {
+func TestCompareServerVersions(t *testing.T) {
 	tests := []struct {
 		A      string
 		B      string
@@ -21,10 +19,97 @@ func (s *utilTestSuite) TestCompareServerVersions(c *check.C) {
 	}
 
 	for _, test := range tests {
-		comment := check.Commentf("%q vs. %q", test.A, test.B)
-
 		got, err := CompareServerVersions(test.A, test.B)
-		c.Assert(err, check.IsNil, comment)
-		c.Assert(got, check.Equals, test.Expect, comment)
+		require.NoError(t, err)
+		require.Equal(t, test.Expect, got)
+	}
+}
+
+func TestFormatBinaryTime(t *testing.T) {
+	tests := []struct {
+		Data   []byte
+		Expect string
+		Error  bool
+	}{
+		{Data: []byte{}, Expect: "00:00:00"},
+		{Data: []byte{0, 0, 0, 0, 0, 0, 0, 10}, Expect: "00:00:10"},
+		{Data: []byte{0, 0, 0, 0, 0, 0, 1, 40}, Expect: "00:01:40"},
+		{Data: []byte{1, 0, 0, 0, 0, 0, 1, 40}, Expect: "-00:01:40"},
+		{Data: []byte{1, 1, 0, 0, 0, 1, 1, 40}, Expect: "-25:01:40"},
+		{Data: []byte{1, 1, 0, 0, 0, 1, 1, 40, 1, 2, 3, 0}, Expect: "-25:01:40.197121"},
+		{Data: []byte{0}, Error: true},
+	}
+
+	for _, test := range tests {
+		n := len(test.Data)
+
+		got, err := FormatBinaryTime(n, test.Data)
+		if test.Error {
+			require.Error(t, err)
+		} else {
+			require.NoError(t, err)
+		}
+		require.Equal(t, test.Expect, string(got), "test case %v", test.Data)
+	}
+}
+
+func TestToBinaryDateTime(t *testing.T) {
+	var (
+		DateTimeNano         = "2006-01-02 15:04:05.000000"
+		formatBinaryDateTime = func(n int, data []byte) string {
+			date, err := FormatBinaryDateTime(n, data)
+			if err != nil {
+				return ""
+			}
+			return string(date)
+		}
+	)
+
+	tests := []struct {
+		Name   string
+		Data   time.Time
+		Expect func(n int, data []byte) string
+		Error  bool
+	}{
+		{
+			Name:   "Zero time",
+			Data:   time.Time{},
+			Expect: nil,
+		},
+		{
+			Name:   "Date with nanoseconds",
+			Data:   time.Date(2023, 10, 10, 10, 10, 10, 123456000, time.UTC),
+			Expect: formatBinaryDateTime,
+		},
+		{
+			Name:   "Date with time",
+			Data:   time.Date(2023, 10, 10, 10, 10, 10, 0, time.UTC),
+			Expect: formatBinaryDateTime,
+		},
+		{
+			Name:   "Date only",
+			Data:   time.Date(2023, 10, 10, 0, 0, 0, 0, time.UTC),
+			Expect: formatBinaryDateTime,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.Name, func(t *testing.T) {
+			got, err := toBinaryDateTime(test.Data)
+			if test.Error {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			if len(got) == 0 {
+				return
+			}
+			tmp := test.Expect(int(got[0]), got[1:])
+			if int(got[0]) < 11 {
+				require.Equal(t, tmp, test.Data.Format(time.DateTime), "test case %v", test.Data.String())
+			} else {
+				require.Equal(t, tmp, test.Data.Format(DateTimeNano), "test case %v", test.Data.String())
+			}
+		})
 	}
 }

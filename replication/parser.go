@@ -15,10 +15,8 @@ import (
 	"github.com/go-mysql-org/go-mysql/utils"
 )
 
-var (
-	// ErrChecksumMismatch indicates binlog checksum mismatch.
-	ErrChecksumMismatch = errors.New("binlog checksum mismatch, data may be corrupted")
-)
+// ErrChecksumMismatch indicates binlog checksum mismatch.
+var ErrChecksumMismatch = errors.New("binlog checksum mismatch, data may be corrupted")
 
 type BinlogParser struct {
 	// "mysql" or "mariadb", if not set, use "mysql" by default
@@ -42,6 +40,8 @@ type BinlogParser struct {
 	verifyChecksum      bool
 
 	rowsEventDecodeFunc func(*RowsEvent, []byte) error
+
+	tableMapOptionalMetaDecodeFunc func([]byte) error
 }
 
 func NewBinlogParser() *BinlogParser {
@@ -218,6 +218,10 @@ func (p *BinlogParser) SetRowsEventDecodeFunc(rowsEventDecodeFunc func(*RowsEven
 	p.rowsEventDecodeFunc = rowsEventDecodeFunc
 }
 
+func (p *BinlogParser) SetTableMapOptionalMetaDecodeFunc(tableMapOptionalMetaDecondeFunc func([]byte) error) {
+	p.tableMapOptionalMetaDecodeFunc = tableMapOptionalMetaDecondeFunc
+}
+
 func (p *BinlogParser) parseHeader(data []byte) (*EventHeader, error) {
 	h := new(EventHeader)
 	err := h.Decode(data)
@@ -257,7 +261,8 @@ func (p *BinlogParser) parseEvent(h *EventHeader, data []byte, rawData []byte) (
 				e = &XIDEvent{}
 			case TABLE_MAP_EVENT:
 				te := &TableMapEvent{
-					flavor: p.flavor,
+					flavor:                 p.flavor,
+					optionalMetaDecodeFunc: p.tableMapOptionalMetaDecodeFunc,
 				}
 				if p.format.EventTypeHeaderLengths[TABLE_MAP_EVENT-1] == 6 {
 					te.tableIDSize = 4
@@ -286,6 +291,8 @@ func (p *BinlogParser) parseEvent(h *EventHeader, data []byte, rawData []byte) (
 				e = &GTIDEvent{}
 			case ANONYMOUS_GTID_EVENT:
 				e = &GTIDEvent{}
+			case GTID_TAGGED_LOG_EVENT:
+				e = &GtidTaggedLogEvent{}
 			case BEGIN_LOAD_QUERY_EVENT:
 				e = &BeginLoadQueryEvent{}
 			case EXECUTE_LOAD_QUERY_EVENT:
@@ -348,7 +355,6 @@ func (p *BinlogParser) Parse(data []byte) (*BinlogEvent, error) {
 	rawData := data
 
 	h, err := p.parseHeader(data)
-
 	if err != nil {
 		return nil, err
 	}

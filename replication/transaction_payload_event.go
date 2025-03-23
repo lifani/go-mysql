@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/DataDog/zstd"
-
-	. "github.com/go-mysql-org/go-mysql/mysql"
+	"github.com/go-mysql-org/go-mysql/mysql"
+	"github.com/klauspost/compress/zstd"
 )
 
 // On The Wire: Field Types
@@ -72,23 +71,23 @@ func (e *TransactionPayloadEvent) decodeFields(data []byte) error {
 	offset := uint64(0)
 
 	for {
-		fieldType := FixedLengthInt(data[offset : offset+1])
+		fieldType := mysql.FixedLengthInt(data[offset : offset+1])
 		offset++
 
 		if fieldType == OTW_PAYLOAD_HEADER_END_MARK {
 			e.Payload = data[offset:]
 			break
 		} else {
-			fieldLength := FixedLengthInt(data[offset : offset+1])
+			fieldLength := mysql.FixedLengthInt(data[offset : offset+1])
 			offset++
 
 			switch fieldType {
 			case OTW_PAYLOAD_SIZE_FIELD:
-				e.Size = FixedLengthInt(data[offset : offset+fieldLength])
+				e.Size = mysql.FixedLengthInt(data[offset : offset+fieldLength])
 			case OTW_PAYLOAD_COMPRESSION_TYPE_FIELD:
-				e.CompressionType = FixedLengthInt(data[offset : offset+fieldLength])
+				e.CompressionType = mysql.FixedLengthInt(data[offset : offset+fieldLength])
 			case OTW_PAYLOAD_UNCOMPRESSED_SIZE_FIELD:
-				e.UncompressedSize = FixedLengthInt(data[offset : offset+fieldLength])
+				e.UncompressedSize = mysql.FixedLengthInt(data[offset : offset+fieldLength])
 			}
 
 			offset += fieldLength
@@ -104,7 +103,13 @@ func (e *TransactionPayloadEvent) decodePayload() error {
 			e.CompressionType, e.compressionType())
 	}
 
-	payloadUncompressed, err := zstd.Decompress(nil, e.Payload)
+	decoder, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
+	if err != nil {
+		return err
+	}
+	defer decoder.Close()
+
+	payloadUncompressed, err := decoder.DecodeAll(e.Payload, nil)
 	if err != nil {
 		return err
 	}

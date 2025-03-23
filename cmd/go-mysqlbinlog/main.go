@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/pingcap/errors"
@@ -15,21 +16,25 @@ import (
 	"github.com/go-mysql-org/go-mysql/replication"
 )
 
-var host = flag.String("host", "127.0.0.1", "MySQL host")
-var port = flag.Int("port", 3306, "MySQL port")
-var user = flag.String("user", "root", "MySQL user, must have replication privilege")
-var password = flag.String("password", "", "MySQL password")
+var (
+	host     = flag.String("host", "127.0.0.1", "MySQL host")
+	port     = flag.Int("port", 3306, "MySQL port")
+	user     = flag.String("user", "root", "MySQL user, must have replication privilege")
+	password = flag.String("password", "", "MySQL password")
 
-var flavor = flag.String("flavor", "mysql", "Flavor: mysql or mariadb")
+	flavor = flag.String("flavor", "mysql", "Flavor: mysql or mariadb")
 
-var file = flag.String("file", "", "Binlog filename")
-var pos = flag.Int("pos", 4, "Binlog position")
-var gtid = flag.String("gtid", "", "Binlog GTID set that this slave has executed")
+	file = flag.String("file", "", "Binlog filename")
+	pos  = flag.Int("pos", 4, "Binlog position")
+	gtid = flag.String("gtid", "", "Binlog GTID set that this slave has executed")
 
-var semiSync = flag.Bool("semisync", false, "Support semi sync")
-var backupPath = flag.String("backup_path", "", "backup path to store binlog files")
+	semiSync   = flag.Bool("semisync", false, "Support semi sync")
+	backupPath = flag.String("backup_path", "", "backup path to store binlog files")
 
-var rawMode = flag.Bool("raw", false, "Use raw mode")
+	rawMode = flag.Bool("raw", false, "Use raw mode")
+	format  = flag.String("format", "plain", "log format")
+	verbose = flag.Bool("verbose", false, "verbose logging")
+)
 
 func main() {
 	flag.Parse()
@@ -38,13 +43,33 @@ func main() {
 		ServerID: 101,
 		Flavor:   *flavor,
 
-		Host:            *host,
-		Port:            uint16(*port),
-		User:            *user,
-		Password:        *password,
-		RawModeEnabled:  *rawMode,
-		SemiSyncEnabled: *semiSync,
-		UseDecimal:      true,
+		Host:                 *host,
+		Port:                 uint16(*port),
+		User:                 *user,
+		Password:             *password,
+		RawModeEnabled:       *rawMode,
+		SemiSyncEnabled:      *semiSync,
+		UseDecimal:           true,
+		MaxReconnectAttempts: 10,
+	}
+
+	logOpts := &slog.HandlerOptions{
+		AddSource: *verbose,
+	}
+
+	switch *format {
+	case "json":
+		cfg.Logger = slog.New(slog.NewJSONHandler(os.Stdout, logOpts))
+	case "plain":
+		cfg.Logger = slog.New(slog.NewTextHandler(os.Stdout, logOpts))
+	default:
+		panic("unsupported log format")
+	}
+
+	err := mysql.ValidateFlavor(*flavor)
+	if err != nil {
+		fmt.Printf("Flavor error: %v\n", errors.ErrorStack(err))
+		return
 	}
 
 	b := replication.NewBinlogSyncer(cfg)

@@ -2,29 +2,26 @@ linters:
   disable-all: true
   enable:
     # All code is ready for:
-    - deadcode
     - errcheck
-    - staticcheck
-    - structcheck
-    - typecheck
-    - unused
-    - varcheck
-    - misspell
-    - nolintlint
+    - gofumpt
     - goimports
-    - nakedret
-    - unconvert
-    - whitespace
     - govet
     - gosimple
     - ineffassign
+    - misspell
+    - nakedret
+    - nolintlint
+    - staticcheck
+    - typecheck
+    - unconvert
+    - unused
+    - whitespace
     # ToDo:
     #- gocritic
     #- golint
 linters-settings:
   nolintlint:
     allow-unused: false
-    allow-leading-space: false
     require-specific: true
 
   govet:
@@ -33,3 +30,6 @@ linters-settings:
       - fieldalignment
       - lostcancel
       - shadow
+issues:
+  exclude-files:
+    - client/examples_test.go

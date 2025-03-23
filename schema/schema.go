@@ -15,9 +15,11 @@ import (
 	"github.com/go-mysql-org/go-mysql/mysql"
 )
 
-var ErrTableNotExist = errors.New("table is not exist")
-var ErrMissingTableMeta = errors.New("missing table meta")
-var HAHealthCheckSchema = "mysql.ha_health_check"
+var (
+	ErrTableNotExist    = errors.New("table is not exist")
+	ErrMissingTableMeta = errors.New("missing table meta")
+	HAHealthCheckSchema = "mysql.ha_health_check"
+)
 
 // Different column type
 const (
@@ -354,7 +356,8 @@ func (ta *Table) fetchIndexesViaSqlDB(conn *sql.DB) error {
 	var unusedVal interface{}
 
 	for r.Next() {
-		var indexName, colName string
+		var indexName string
+		var colName sql.NullString
 		var noneUnique uint64
 		var cardinality interface{}
 		cols, err := r.Columns()
@@ -387,7 +390,12 @@ func (ta *Table) fetchIndexesViaSqlDB(conn *sql.DB) error {
 		}
 
 		c := toUint64(cardinality)
-		currentIndex.AddColumn(colName, c)
+		// If colName is a null string, switch to ""
+		if colName.Valid {
+			currentIndex.AddColumn(colName.String, c)
+		} else {
+			currentIndex.AddColumn("", c)
+		}
 		currentIndex.NoneUnique = noneUnique
 	}
 

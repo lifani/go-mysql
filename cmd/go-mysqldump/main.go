@@ -6,31 +6,37 @@ import (
 	"os"
 	"strings"
 
-	"github.com/go-mysql-org/go-mysql/dump"
 	"github.com/pingcap/errors"
+
+	"github.com/go-mysql-org/go-mysql/dump"
 )
 
-var addr = flag.String("addr", "127.0.0.1:3306", "MySQL addr")
-var user = flag.String("user", "root", "MySQL user")
-var password = flag.String("password", "", "MySQL password")
-var execution = flag.String("exec", "mysqldump", "mysqldump execution path")
-var output = flag.String("o", "", "dump output, empty for stdout")
+var (
+	addr      = flag.String("addr", "127.0.0.1:3306", "MySQL addr")
+	user      = flag.String("user", "root", "MySQL user")
+	password  = flag.String("password", "", "MySQL password")
+	execution = flag.String("exec", "", "mysqldump/mariadb-dump execution path")
+	output    = flag.String("o", "", "dump output, empty for stdout")
 
-var dbs = flag.String("dbs", "", "dump databases, separated by comma")
-var tables = flag.String("tables", "", "dump tables, separated by comma, will overwrite dbs")
-var tableDB = flag.String("table_db", "", "database for dump tables")
-var ignoreTables = flag.String("ignore_tables", "", "ignore tables, must be database.table format, separated by comma")
+	dbs           = flag.String("dbs", "", "dump databases, separated by comma")
+	tables        = flag.String("tables", "", "dump tables, separated by comma, will overwrite dbs")
+	tableDB       = flag.String("table_db", "", "database for dump tables")
+	ignoreTables  = flag.String("ignore_tables", "", "ignore tables, must be database.table format, separated by comma")
+	skipBinlogPos = flag.Bool("skip-binlog-pos", false, "skip fetching binlog position via --master-data/--source-data")
+)
 
 func main() {
 	flag.Parse()
 
 	d, err := dump.NewDumper(*execution, *addr, *user, *password)
 	if err != nil {
-		fmt.Printf("Create Dumper error %v\n", errors.ErrorStack(err))
+		fmt.Printf("Create Dumper error: %v\n", errors.ErrorStack(err))
 		os.Exit(1)
 	}
 
-	if len(*ignoreTables) == 0 {
+	d.SkipMasterData(*skipBinlogPos)
+
+	if len(*ignoreTables) > 0 {
 		subs := strings.Split(*ignoreTables, ",")
 		for _, sub := range subs {
 			if seps := strings.Split(sub, "."); len(seps) == 2 {
@@ -47,10 +53,10 @@ func main() {
 		d.AddDatabases(subs...)
 	}
 
-	var f = os.Stdout
+	f := os.Stdout
 
 	if len(*output) > 0 {
-		f, err = os.OpenFile(*output, os.O_CREATE|os.O_WRONLY, 0644)
+		f, err = os.OpenFile(*output, os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
 			fmt.Printf("Open file error %v\n", errors.ErrorStack(err))
 			os.Exit(1)
